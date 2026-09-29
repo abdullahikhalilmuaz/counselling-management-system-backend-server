@@ -1,6 +1,7 @@
 const Appointment = require('../models/Appointment');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const { sendMail } = require('../services/emailService');
 
 exports.create = async (req, res, next) => {
   try {
@@ -14,10 +15,19 @@ exports.create = async (req, res, next) => {
     const appt = await Appointment.create({
       student: req.user._id, counsellor, date, time, reason,
     });
+    const counsellorUser = await User.findById(counsellor);
+
     await Notification.create({
       user: counsellor,
       message: `New appointment request from ${req.user.name} on ${date} at ${time}`,
     });
+    if (counsellorUser) {
+      sendMail({
+        to: counsellorUser.email,
+        subject: 'New Appointment Request',
+        text: `New appointment request from ${req.user.name} on ${date} at ${time}.\nReason: ${reason || 'N/A'}`,
+      }).catch(() => {});
+    }
     res.status(201).json(appt);
   } catch (err) { next(err); }
 };
@@ -25,7 +35,7 @@ exports.create = async (req, res, next) => {
 exports.mine = async (req, res, next) => {
   try {
     const list = await Appointment.find({ student: req.user._id })
-      .populate('counsellor', 'name specialty email')
+      .populate('counsellor', 'name specialty email avatar')
       .sort({ createdAt: -1 });
     res.json(list);
   } catch (err) { next(err); }
@@ -34,7 +44,7 @@ exports.mine = async (req, res, next) => {
 exports.counsellorList = async (req, res, next) => {
   try {
     const list = await Appointment.find({ counsellor: req.user._id })
-      .populate('student', 'name email department')
+      .populate('student', 'name email department avatar')
       .sort({ createdAt: -1 });
     res.json(list);
   } catch (err) { next(err); }
@@ -63,10 +73,20 @@ exports.updateStatus = async (req, res, next) => {
     }
     appt.status = status;
     await appt.save();
+
     await Notification.create({
       user: appt.student,
       message: `Your appointment on ${appt.date} at ${appt.time} was ${status}`,
     });
+
+    const student = await User.findById(appt.student);
+    if (student) {
+      sendMail({
+        to: student.email,
+        subject: `Appointment ${status}`,
+        text: `Your appointment on ${appt.date} at ${appt.time} was ${status}.`,
+      }).catch(() => {});
+    }
     res.json(appt);
   } catch (err) { next(err); }
 };
@@ -80,6 +100,15 @@ exports.cancel = async (req, res, next) => {
     }
     appt.status = 'cancelled';
     await appt.save();
+
+    const counsellor = await User.findById(appt.counsellor);
+    if (counsellor) {
+      sendMail({
+        to: counsellor.email,
+        subject: 'Appointment Cancelled',
+        text: `${req.user.name} cancelled their appointment on ${appt.date} at ${appt.time}.`,
+      }).catch(() => {});
+    }
     res.json(appt);
   } catch (err) { next(err); }
 };
@@ -91,7 +120,7 @@ exports.slots = async (req, res, next) => {
     const { counsellorId, date } = req.query;
     if (!counsellorId || !date) return res.status(400).json({ message: 'Missing params' });
     const booked = await Appointment.find({
-      counsellor: counsellorId, date, status: 'approved',
+      counsellor: counsellorId, date, status: { $in: ['approved','pending'] },
     }).select('time');
     const bookedTimes = booked.map((b) => b.time);
     const available = SLOTS.filter((s) => !bookedTimes.includes(s));
